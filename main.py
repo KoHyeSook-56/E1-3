@@ -48,6 +48,23 @@ def mac(pattern, kernel):
     return score
 
 
+def flatten_matrix(matrix):
+    """Convert a validated matrix to row-major storage."""
+    return [value for row in matrix for value in row]
+
+
+def mac_flat(pattern, kernel):
+    """Multiply-accumulate equally sized, row-major arrays."""
+    if len(pattern) != len(kernel):
+        raise ValueError('1차원 배열의 크기가 서로 다릅니다.')
+    score = 0.0
+    for index in range(len(pattern)):
+        score += pattern[index] * kernel[index]
+    if not math.isfinite(score):
+        raise ValueError('MAC 결과가 유한하지 않습니다(수치 범위 초과).')
+    return score
+
+
 def decide(a, b, labels=('Cross', 'X')):
     if abs(a - b) < EPSILON:
         return 'UNDECIDED'
@@ -65,20 +82,37 @@ def generate_patterns(n):
 def benchmark(sizes, repeats=100, samples=None):
     if repeats < 10:
         raise ValueError('반복 횟수는 10 이상이어야 합니다.')
-    print('\n[성능 분석: MAC 1회 평균, 반복 {}회]'.format(repeats))
-    print('크기       평균 시간(ms)     연산 횟수(N²)')
+    print('\n[성능 분석: MAC 1회 평균, 동일 입력·반복 {}회]'.format(repeats))
+    print('평탄화 준비 시간은 제외 (배열 변환은 측정 전에 1회 수행)')
+    print('크기       기존 2차원(ms)  최적화 1차원(ms)  개선율(%)  연산 횟수(N²)')
     results = []
     for n in sizes:
         p, k = samples[n] if samples and n in samples else generate_patterns(n)
+        flat_p, flat_k = flatten_matrix(p), flatten_matrix(k)
         mac(p, k)  # warm-up, outside measured interval
-        elapsed = 0.0
-        for _ in range(repeats):
-            start = time.perf_counter_ns()
-            mac(p, k)
-            elapsed += time.perf_counter_ns() - start
-        average = elapsed / repeats / 1_000_000
-        print('{:2}×{:<2}      {:.6f}             {}'.format(n, n, average, n * n))
-        results.append((n, average, n * n))
+        mac_flat(flat_p, flat_k)
+        elapsed_2d = elapsed_1d = 0
+        for iteration in range(repeats):
+            if iteration % 2:
+                start = time.perf_counter_ns()
+                mac_flat(flat_p, flat_k)
+                elapsed_1d += time.perf_counter_ns() - start
+                start = time.perf_counter_ns()
+                mac(p, k)
+                elapsed_2d += time.perf_counter_ns() - start
+            else:
+                start = time.perf_counter_ns()
+                mac(p, k)
+                elapsed_2d += time.perf_counter_ns() - start
+                start = time.perf_counter_ns()
+                mac_flat(flat_p, flat_k)
+                elapsed_1d += time.perf_counter_ns() - start
+        average_2d = elapsed_2d / repeats / 1_000_000
+        average_1d = elapsed_1d / repeats / 1_000_000
+        improvement = (1 - average_1d / average_2d) * 100 if average_2d else 0
+        print('{:2}×{:<2}      {:.6f}        {:.6f}          {:+.1f}       {}'.format(
+            n, n, average_2d, average_1d, improvement, n * n))
+        results.append((n, average_2d, average_1d, n * n))
     return results
 
 
@@ -101,8 +135,9 @@ def interactive(repeats):
     a = read_matrix('필터 A')
     b = read_matrix('필터 B')
     pattern = read_matrix('패턴')
+    flat_a, flat_b, flat_pattern = map(flatten_matrix, (a, b, pattern))
     start = time.perf_counter_ns()
-    sa, sb = mac(pattern, a), mac(pattern, b)
+    sa, sb = mac_flat(flat_pattern, flat_a), mac_flat(flat_pattern, flat_b)
     elapsed = (time.perf_counter_ns() - start) / 1_000_000
     print('\nA 점수: {:.17g}\nB 점수: {:.17g}'.format(sa, sb))
     result = decide(sa, sb, ('A', 'B'))
@@ -135,7 +170,7 @@ def analyze(data, repeats=100):
                 canonical = normalize_label(label)
                 if canonical in normalized:
                     raise ValueError('중복 표준 라벨: ' + canonical)
-                normalized[canonical] = validate_matrix(matrix, n)
+                normalized[canonical] = flatten_matrix(validate_matrix(matrix, n))
             if set(normalized) != {'Cross', 'X'}:
                 raise ValueError('Cross와 X 필터가 모두 필요합니다.')
             loaded[key] = normalized
@@ -157,9 +192,9 @@ def analyze(data, repeats=100):
             if not isinstance(case, dict):
                 raise ValueError('패턴 항목은 객체여야 합니다.')
             expected = normalize_label(case.get('expected'))
-            pattern = validate_matrix(case.get('input'), n)
+            pattern = flatten_matrix(validate_matrix(case.get('input'), n))
             group = loaded[filter_key]
-            a, b = mac(pattern, group['Cross']), mac(pattern, group['X'])
+            a, b = mac_flat(pattern, group['Cross']), mac_flat(pattern, group['X'])
             result = decide(a, b)
             ok = result == expected
             print('{}: Cross={:.17g}, X={:.17g} | 판정={} | expected={} | {}'.format(

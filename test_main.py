@@ -24,6 +24,28 @@ class SimulatorTests(unittest.TestCase):
             self.assertEqual(main.mac(cross, x), 1)
             self.assertEqual(main.mac(x, x), 2 * n - 1)
 
+    def test_flattened_mac_matches_matrix_mac(self):
+        for n in (3, 5, 13, 25):
+            cross, x = main.generate_patterns(n)
+            flat_cross = main.flatten_matrix(cross)
+            flat_x = main.flatten_matrix(x)
+            self.assertEqual(len(flat_cross), n * n)
+            self.assertEqual(main.mac_flat(flat_cross, flat_cross), main.mac(cross, cross))
+            self.assertEqual(main.mac_flat(flat_cross, flat_x), main.mac(cross, x))
+        with self.assertRaises(ValueError):
+            main.mac_flat([1], [1, 2])
+
+    def test_benchmark_compares_both_implementations(self):
+        cross, _ = main.generate_patterns(3)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            results = main.benchmark([3], repeats=10, samples={3: (cross, cross)})
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], 3)
+        self.assertGreater(results[0][1], 0)
+        self.assertGreater(results[0][2], 0)
+        self.assertIn('기존 2차원', output.getvalue())
+        self.assertIn('최적화 1차원', output.getvalue())
+
     def test_labels(self):
         for value, expected in [('+', 'Cross'), ('cross', 'Cross'), ('Cross', 'Cross'), ('x', 'X'), ('X', 'X')]:
             self.assertEqual(main.normalize_label(value), expected)
